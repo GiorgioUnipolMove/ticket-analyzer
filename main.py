@@ -3,17 +3,16 @@
 Ticket Analyzer - Analisi automatizzata ticket restituzione dispositivi.
 
 Uso:
-  python main.py --provider gemini --test 20
-  python main.py --provider claude
+  python main.py --test 20                    # test rule-based (default)
+  python main.py                              # run completo rule-based
+  python main.py --provider ollama --test 20   # test con LLM
   python main.py --resume
 """
 
 import sys
 import argparse
 from config import Config
-from providers import create_provider
 from services.data_loader import DataLoader
-from services.analyzer import Analyzer
 from services.excel_writer import ExcelWriter
 from utils.progress import load_progress, clear_progress
 
@@ -25,11 +24,11 @@ def parse_args():
     )
     parser.add_argument(
         '--provider', type=str,
-        default=Config.DEFAULT_PROVIDER,
-        choices=['claude', 'gemini', 'ollama'],
-        help='Provider LLM (default: da .env)',
+        default='rules',
+        choices=['rules', 'claude', 'gemini', 'ollama'],
+        help='Metodo di analisi: rules (default, deterministico) o LLM',
     )
-    parser.add_argument('--model', type=str, default=None, help='Modello specifico')
+    parser.add_argument('--model', type=str, default=None, help='Modello specifico (solo per LLM)')
     parser.add_argument('--test', type=int, default=None, help='Numero righe per test run')
     parser.add_argument('--start', type=int, default=0, help='Riga di partenza (0-indexed)')
     parser.add_argument('--resume', action='store_true', help='Riprendi da ultimo salvataggio')
@@ -45,16 +44,6 @@ def main():
     # Clear progress se richiesto
     if args.clear:
         clear_progress()
-
-    # Crea provider LLM
-    try:
-        provider = create_provider(args.provider, args.model)
-    except ValueError as e:
-        print(f"❌ {e}")
-        sys.exit(1)
-
-    print(f"🤖 Provider: {provider.name()}")
-    print(f"⚡ Rate limit: {Config.get_rate_limit(args.provider)} req/min")
 
     # Carica dati
     data = DataLoader(args.input).load()
@@ -76,15 +65,28 @@ def main():
         print(f"{'=' * 60}\n")
     else:
         end_idx = len(data.df_main)
-        rpm = Config.get_rate_limit(args.provider)
-        est_hours = (end_idx - start_idx) / rpm / 60
         print(f"\n{'=' * 60}")
         print(f"🚀 PROCESSAMENTO COMPLETO: {end_idx - start_idx} righe")
-        print(f"⏱️  Tempo stimato: ~{est_hours:.1f} ore")
         print(f"{'=' * 60}\n")
 
+    # Crea analyzer
+    if args.provider == 'rules':
+        from services.rule_analyzer import RuleBasedAnalyzer
+        print("📋 Modalità: Rule-based (deterministico)")
+        analyzer = RuleBasedAnalyzer(data)
+    else:
+        from providers import create_provider
+        from services.analyzer import Analyzer
+        try:
+            provider = create_provider(args.provider, args.model)
+        except (ValueError, ConnectionError) as e:
+            print(f"❌ {e}")
+            sys.exit(1)
+        print(f"🤖 Provider: {provider.name()}")
+        print(f"⚡ Rate limit: {Config.get_rate_limit(args.provider)} req/min")
+        analyzer = Analyzer(provider, data, args.provider)
+
     # Analisi
-    analyzer = Analyzer(provider, data, args.provider)
     results = analyzer.run(start_idx, end_idx, results)
 
     # Scrivi output

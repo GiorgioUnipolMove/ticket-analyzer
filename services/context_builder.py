@@ -12,7 +12,8 @@ class ContextBuilder:
         'tipologia_cliente', 'data_rientro_in_magazzino',
         'stato_dispositivo', 'data_recesso_dispositivo',
         'stato_obu', 'data_cessazione_obu', 'data_fattura',
-        'STATO FATTURA', 'NOTE',
+        'doc_fiscal_date', 'STATO FATTURA', 'NOTE',
+        "E' nell'elenco dell'altro file", 'Note ',
     ]
 
     MAX_POSTS = 5        # max post per ticket

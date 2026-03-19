@@ -72,7 +72,8 @@ class Analyzer:
         for attempt in range(Config.MAX_RETRIES):
             try:
                 self.rate_limiter.wait_if_needed()
-                return self.provider.call(self.system_prompt, user_prompt)
+                result = self.provider.call(self.system_prompt, user_prompt)
+                return self._clean_response(result)
             except Exception as e:
                 err_str = str(e).lower()
                 is_rate_limit = any(kw in err_str for kw in ("rate", "429", "quota", "resource"))
@@ -88,3 +89,14 @@ class Analyzer:
                     return f"ERRORE API: {str(e)[:100]}"
 
         return "ERRORE: max retry raggiunto"
+
+    @staticmethod
+    def _clean_response(text: str) -> str:
+        """Rimuove prefissi e formattazione indesiderata dalla risposta LLM."""
+        # Rimuovi prefissi comuni
+        for prefix in ("ANALISI:", "ANALISI :", "Analisi:", "Analisi :"):
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+        # Rimuovi markdown bold
+        text = text.replace("**", "")
+        return text.strip()
