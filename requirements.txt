@@ -1,0 +1,8 @@
+pandas>=2.0
+openpyxl>=3.1
+python-dotenv>=1.0
+
+# Provider LLM - installa solo quelli che usi
+anthropic>=0.40        # Claude
+google-genai>=1.0      # Gemini
+# requests>=2.31       # Ollama (di solito già installato)
