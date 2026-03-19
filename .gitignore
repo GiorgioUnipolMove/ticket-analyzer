@@ -5,3 +5,4 @@ progress.json
 output_analisi.xlsx
 *.xlsx
 .DS_Store
+.venv/

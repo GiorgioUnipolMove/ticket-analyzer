@@ -27,6 +27,7 @@ class Analyzer:
         total = end_idx - start_idx
         t_start = time.time()
         errors = 0
+        actually_processed = 0
 
         for idx in range(start_idx, end_idx):
             row = self.data.df_main.iloc[idx]
@@ -39,21 +40,21 @@ class Analyzer:
             context = self.context_builder.build(row)
             analisi = self._call_with_retry(context)
             results[tid] = analisi
+            actually_processed += 1
 
             if analisi.startswith("ERRORE"):
                 errors += 1
 
-            processed = idx - start_idx + 1
             elapsed = time.time() - t_start
-            avg_time = elapsed / processed
+            avg_time = elapsed / actually_processed
             remaining = (end_idx - idx - 1) * avg_time
 
-            print(f"  [{processed}/{total}] {tid}: {analisi[:80]}...")
+            print(f"  [{actually_processed}/{total}] {tid}: {analisi[:80]}...")
 
-            if processed % 10 == 0:
+            if actually_processed % 10 == 0:
                 print(f"    ⏱️  Media: {avg_time:.1f}s/riga | Rimanente: {remaining / 60:.0f} min | Errori: {errors}")
 
-            if processed % Config.BATCH_SAVE_EVERY == 0:
+            if actually_processed % Config.BATCH_SAVE_EVERY == 0:
                 save_progress(results, idx, self.provider_name)
                 print(f"    💾 Progresso salvato ({len(results)} analisi)")
 

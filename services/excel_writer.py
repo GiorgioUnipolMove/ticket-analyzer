@@ -17,7 +17,10 @@ class ExcelWriter:
         df_out = df_main.copy()
 
         # Inserisci colonna Analisi dopo data_recesso_dispositivo
-        col_idx = df_out.columns.get_loc('data_recesso_dispositivo') + 1
+        try:
+            col_idx = df_out.columns.get_loc('data_recesso_dispositivo') + 1
+        except KeyError:
+            col_idx = len(df_out.columns)
         df_out.insert(col_idx, 'Analisi', '')
 
         # Popola Analisi
