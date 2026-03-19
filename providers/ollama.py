@@ -13,7 +13,7 @@ class OllamaProvider(LLMProvider):
     def _health_check(self):
         """Verifica che Ollama sia raggiungibile e il modello disponibile."""
         try:
-            resp = self._requests.get(f"{self.base_url}/api/tags", timeout=5)
+            resp = self._requests.get(f"{self.base_url}/api/tags", timeout=30)
             resp.raise_for_status()
         except self._requests.ConnectionError:
             raise ConnectionError(
