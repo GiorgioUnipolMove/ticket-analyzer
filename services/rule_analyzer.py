@@ -30,7 +30,7 @@ class RuleBasedAnalyzer:
                 cid = ''
 
             # Estrai testi separati per ticket e cliente
-            ticket_text, client_text, all_text = extract_texts(
+            ticket_text, client_text, all_text, post_text, note_cliente_text = extract_texts(
                 tid, cid,
                 self.data.post_ticket_lookup,
                 self.data.notes_lookup,
@@ -38,7 +38,10 @@ class RuleBasedAnalyzer:
             )
 
             # Valuta regole
-            analisi = self.engine.evaluate(row, ticket_text, client_text, all_text)
+            analisi = self.engine.evaluate(
+                row, ticket_text, client_text, all_text,
+                post_text, note_cliente_text,
+            )
             results[tid] = analisi
             actually_processed += 1
 

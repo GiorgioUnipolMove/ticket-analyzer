@@ -3,12 +3,18 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 
 
+# File con analisi manuali di riferimento (per confronto)
+MANUAL_ANALYSIS_FILE = "Copia di Restituzione_device_aggiuntivi_ANALISI OPS.xlsx"
+MANUAL_ANALYSIS_COL = "Analisi "  # nome colonna nel file manuale (con spazio)
+
+
 class ExcelWriter:
     """Genera il file Excel di output con la colonna Analisi formattata."""
 
     HEADER_FILL = PatternFill('solid', fgColor='4472C4')
     HEADER_FONT = Font(bold=True, color='FFFFFF', name='Arial', size=10)
     ANALISI_FILL = PatternFill('solid', fgColor='FFF2CC')
+    MANUAL_FILL = PatternFill('solid', fgColor='D9E2F3')
     BODY_FONT = Font(name='Arial', size=10)
 
     def write(self, df_main: pd.DataFrame, results: dict, output_file: str):
@@ -29,6 +35,18 @@ class ExcelWriter:
             if tid in results:
                 df_out.at[idx, 'Analisi'] = results[tid]
 
+        # Aggiungi colonna Analisi Manuale (da file di confronto)
+        manual_map = self._load_manual_analyses()
+        analisi_col_idx = df_out.columns.get_loc('Analisi') + 1
+        df_out.insert(analisi_col_idx, 'Analisi Manuale', '')
+        if manual_map:
+            for idx, row in df_out.iterrows():
+                tid = str(row.get('id_interaction', '')).strip()
+                if tid in manual_map:
+                    df_out.at[idx, 'Analisi Manuale'] = manual_map[tid]
+            manual_count = sum(1 for v in manual_map.values() if v)
+            print(f"  📋 {manual_count} analisi manuali caricate per confronto")
+
         # Rimuovi ClienteID dall'output
         if 'ClienteID' in df_out.columns:
             df_out = df_out.drop(columns=['ClienteID'])
@@ -42,6 +60,26 @@ class ExcelWriter:
         filled = sum(1 for v in results.values() if v and not v.startswith('ERRORE'))
         print(f"  ✅ {filled} analisi scritte su {len(df_out)} righe")
 
+    def _load_manual_analyses(self) -> dict:
+        """Carica le analisi manuali dal file di confronto."""
+        import os
+        if not os.path.exists(MANUAL_ANALYSIS_FILE):
+            print(f"  ⚠️  File confronto non trovato: {MANUAL_ANALYSIS_FILE}")
+            return {}
+        try:
+            df = pd.read_excel(MANUAL_ANALYSIS_FILE, sheet_name=0, dtype=str)
+            manual_map = {}
+            if MANUAL_ANALYSIS_COL in df.columns:
+                for _, row in df.iterrows():
+                    tid = str(row.get('id_interaction', '')).strip()
+                    val = str(row.get(MANUAL_ANALYSIS_COL, '')).strip()
+                    if tid and val and val not in ('nan', '', 'NULL', 'None'):
+                        manual_map[tid] = val
+            return manual_map
+        except Exception as e:
+            print(f"  ⚠️  Errore lettura file confronto: {e}")
+            return {}
+
     def _format(self, output_file: str):
         wb = openpyxl.load_workbook(output_file)
         ws = wb.active
@@ -52,18 +90,27 @@ class ExcelWriter:
             cell.font = self.HEADER_FONT
             cell.alignment = Alignment(horizontal='center', wrap_text=True)
 
-        # Trova colonna Analisi
+        # Trova colonne Analisi e Analisi Manuale
         analisi_col = None
+        manual_col = None
         for idx, cell in enumerate(ws[1], 1):
             if cell.value == 'Analisi':
                 analisi_col = idx
-                break
+            elif cell.value == 'Analisi Manuale':
+                manual_col = idx
 
-        # Evidenzia colonna Analisi
+        # Evidenzia colonna Analisi (giallo)
         if analisi_col:
             for row in ws.iter_rows(min_row=2, min_col=analisi_col, max_col=analisi_col):
                 for cell in row:
                     cell.fill = self.ANALISI_FILL
+                    cell.font = self.BODY_FONT
+
+        # Evidenzia colonna Analisi Manuale (azzurro)
+        if manual_col:
+            for row in ws.iter_rows(min_row=2, min_col=manual_col, max_col=manual_col):
+                for cell in row:
+                    cell.fill = self.MANUAL_FILL
                     cell.font = self.BODY_FONT
 
         # Auto-width
