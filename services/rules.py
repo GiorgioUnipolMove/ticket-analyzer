@@ -1,11 +1,15 @@
 """
 Rule engine per l'analisi deterministica dei ticket.
-Ogni regola ha una priorità: le regole con priorità più bassa vengono valutate prima.
-La prima regola che matcha produce l'output.
+TIER1: regole basate solo su stati strutturati (no testo).
+TIER2: regole basate su keyword nei testi (post/note).
 """
 
 import re
 
+
+# ═══════════════════════════════════════════════════════════════
+# UTILITY
+# ═══════════════════════════════════════════════════════════════
 
 def _field(row, name):
     """Estrae un campo dalla riga, normalizzato uppercase. Ritorna '' se nullo."""
@@ -21,6 +25,12 @@ def _contains_any(text, keywords):
     return any(kw in text_lower for kw in keywords)
 
 
+def _contains_none(text, keywords):
+    """True se NESSUNA keyword è presente nel testo (filtro negativo)."""
+    text_lower = text.lower()
+    return not any(kw in text_lower for kw in keywords)
+
+
 def _word_match(text, patterns):
     """Controlla se il testo contiene una delle parole/frasi come parola intera."""
     text_lower = text.lower()
@@ -29,6 +39,25 @@ def _word_match(text, patterns):
             return True
     return False
 
+
+def _has_rientro(row):
+    """True se data_rientro_in_magazzino è popolato."""
+    return _field(row, 'data_rientro_in_magazzino') != ''
+
+
+def _is_rejected(row):
+    """True se pystatuswork contiene REJECTED."""
+    return 'REJECTED' in _field(row, 'pystatuswork')
+
+
+def _sta_pagando(row):
+    """True se STATO FATTURA=OK AND stato_obu=ATTIVO."""
+    return _field(row, 'STATO FATTURA') == 'OK' and _field(row, 'stato_obu') == 'ATTIVO'
+
+
+# ═══════════════════════════════════════════════════════════════
+# EXTRACT TEXTS (API invariata)
+# ═══════════════════════════════════════════════════════════════
 
 def extract_texts(ticket_id, client_id, post_ticket_lookup, notes_lookup, post_pulse_lookup):
     """Estrae testi separati: post operatore, note cliente, e testo combinato."""
@@ -73,246 +102,454 @@ def extract_texts(ticket_id, client_id, post_ticket_lookup, notes_lookup, post_p
 
 
 # ═══════════════════════════════════════════════════════════════
-# TIER 1: Regole deterministiche basate sugli stati
+# TIER 1: Regole basate solo su stati strutturati (no testo)
 # ═══════════════════════════════════════════════════════════════
 
-TIER1_RULES = []
+# --- Branch F: NOTE pre-emption (prima di tutto) ---
 
-
-def _r1_cessato_cessato_cessato(row, text):
-    """Contratto CESSATO, Dispositivo CESSATO, OBU CESSATO."""
-    if (_field(row, 'stato_contratto') == 'CESSATO' and
-            _field(row, 'stato_dispositivo') == 'CESSATO' and
-            _field(row, 'stato_obu') == 'CESSATO'):
-        return ("Contratto cessato - non necessaria operazione su rimozione "
-                "dispositivi aggiuntivi - verificare se fatturazione canoni "
-                "coerente con richiesta cliente")
+def _t1_50_note_obu_non_presente(row):
+    """NOTE = OBU NON PRESENTE."""
+    if _field(row, 'NOTE') == 'OBU NON PRESENTE':
+        return "OBU non presente sul contratto"
     return None
 
 
-def _r2_cessato_cessato_attivo(row, text):
-    """Contratto CESSATO, Dispositivo CESSATO, OBU ancora ATTIVO."""
+def _t1_51_note_obu_altro_contratto(row):
+    """NOTE = OBU ASSOCIATO AD ALTRO CONTRATTO."""
+    if _field(row, 'NOTE') == 'OBU ASSOCIATO AD ALTRO CONTRATTO':
+        return "OBU associato ad altro contratto"
+    return None
+
+
+# --- Branch A: Contratto CESSATO ---
+
+def _t1_01_cess_cess_cess(row):
+    """CESS/CESS/CESS."""
+    if (_field(row, 'stato_contratto') == 'CESSATO' and
+            _field(row, 'stato_dispositivo') == 'CESSATO' and
+            _field(row, 'stato_obu') == 'CESSATO'):
+        return "Contratto cessato, dispositivo e OBU cessati. Verificare coerenza fatturazione"
+    return None
+
+
+def _t1_02_cess_cess_att(row):
+    """CESS/CESS/ATT."""
     if (_field(row, 'stato_contratto') == 'CESSATO' and
             _field(row, 'stato_dispositivo') == 'CESSATO' and
             _field(row, 'stato_obu') == 'ATTIVO'):
-        return "Stati discordanti - conferma lato IT che gli stati siano allineati"
+        return "Stati discordanti: contratto e dispositivo cessati, OBU ancora attivo. Necessario allineamento IT"
     return None
 
 
-def _r3_attivo_cessato_cessato(row, text):
-    """Contratto ATTIVO, Dispositivo CESSATO, OBU CESSATO → Risolto."""
+def _t1_03_cess_riconse(row):
+    """CESS/RICONSE/qualsiasi."""
+    if (_field(row, 'stato_contratto') == 'CESSATO' and
+            _field(row, 'stato_dispositivo') == 'RICONSEGNATO'):
+        return "Contratto cessato, dispositivo riconsegnato"
+    return None
+
+
+def _t1_04_cess_sosp(row):
+    """CESS/SOSP/qualsiasi."""
+    if (_field(row, 'stato_contratto') == 'CESSATO' and
+            _field(row, 'stato_dispositivo') == 'SOSPESO'):
+        return "Stati discordanti: contratto cessato, dispositivo sospeso. Necessario allineamento IT"
+    return None
+
+
+def _t1_05_cess_att(row):
+    """CESS/ATT/qualsiasi."""
+    if (_field(row, 'stato_contratto') == 'CESSATO' and
+            _field(row, 'stato_dispositivo') == 'ATTIVO'):
+        return "Contratto cessato ma dispositivo ancora attivo. Necessario allineamento IT"
+    return None
+
+
+def _t1_06_cess_catchall(row):
+    """CESS/catch-all."""
+    if _field(row, 'stato_contratto') == 'CESSATO':
+        return "Contratto cessato. Verificare stati dispositivo e OBU"
+    return None
+
+
+# --- Branch B: Contratto ATTIVO + flag recesso ---
+
+def _t1_10_recesso_obu(row):
+    """flag_recesso_obu=S + OBU CESS."""
+    if (_field(row, 'flag_recesso_obu') == 'S' and
+            _field(row, 'stato_obu') == 'CESSATO'):
+        return "OBU cessati per recesso"
+    return None
+
+
+# --- Branch C: Contratto ATTIVO + Dispositivo CESSATO ---
+
+def _t1_20_att_cess_cess_rientro(row):
+    """ATT/CESS/CESS + ha data_rientro."""
+    if (_field(row, 'stato_contratto') == 'ATTIVO' and
+            _field(row, 'stato_dispositivo') == 'CESSATO' and
+            _field(row, 'stato_obu') == 'CESSATO' and
+            _has_rientro(row)):
+        return "Dispositivo cessato e rientrato a magazzino. Restituzione completata"
+    return None
+
+
+def _t1_21_att_cess_cess_no_rientro(row):
+    """ATT/CESS/CESS + no rientro."""
     if (_field(row, 'stato_contratto') == 'ATTIVO' and
             _field(row, 'stato_dispositivo') == 'CESSATO' and
             _field(row, 'stato_obu') == 'CESSATO'):
-        return "Risolto"
+        return "Dispositivo e OBU cessati. Verificare rientro a magazzino"
     return None
 
 
-def _r4_cessato_paga_fattura(row, text):
-    """Contratto ATTIVO, Dispositivo CESSATO, OBU ATTIVO, STATO FATTURA OK."""
+def _t1_22_att_cess_att_pagando(row):
+    """ATT/CESS/ATT + FATTURA OK."""
     if (_field(row, 'stato_contratto') == 'ATTIVO' and
             _field(row, 'stato_dispositivo') == 'CESSATO' and
             _field(row, 'stato_obu') == 'ATTIVO' and
             _field(row, 'STATO FATTURA') == 'OK'):
-        return "Dispositivo cessato ma lo paga in fattura"
+        return "Dispositivo cessato ma OBU ancora attivo. Sta pagando"
     return None
 
 
-def _r5_attivo_cessato_attivo(row, text):
-    """Contratto ATTIVO, Dispositivo CESSATO, OBU ATTIVO → Risolto."""
+def _t1_23_att_cess_att(row):
+    """ATT/CESS/ATT."""
     if (_field(row, 'stato_contratto') == 'ATTIVO' and
             _field(row, 'stato_dispositivo') == 'CESSATO' and
             _field(row, 'stato_obu') == 'ATTIVO'):
-        return "Risolto"
+        return "Dispositivo cessato ma OBU ancora attivo. Necessario allineamento IT"
     return None
 
 
-def _r6_cessato_sospeso_attivo(row, text):
-    """Contratto CESSATO, Dispositivo SOSPESO, OBU ATTIVO."""
-    if (_field(row, 'stato_contratto') == 'CESSATO' and
-            _field(row, 'stato_dispositivo') == 'SOSPESO' and
+# --- Branch D: Contratto ATTIVO + Dispositivo RICONSEGNATO ---
+
+def _t1_30_att_riconse_cess_rientro(row):
+    """ATT/RICONSE/CESS + rientro."""
+    if (_field(row, 'stato_contratto') == 'ATTIVO' and
+            _field(row, 'stato_dispositivo') == 'RICONSEGNATO' and
+            _field(row, 'stato_obu') == 'CESSATO' and
+            _has_rientro(row)):
+        return "Dispositivo riconsegnato e rientrato a magazzino"
+    return None
+
+
+def _t1_31_att_riconse_att(row):
+    """ATT/RICONSE/ATT."""
+    if (_field(row, 'stato_contratto') == 'ATTIVO' and
+            _field(row, 'stato_dispositivo') == 'RICONSEGNATO' and
             _field(row, 'stato_obu') == 'ATTIVO'):
-        return "Stati discordanti - conferma lato IT che gli stati siano allineati"
+        return "Dispositivo riconsegnato ma OBU ancora attivo. Necessario allineamento IT"
     return None
 
 
-def _r7_recesso_obu(row, text):
-    """Flag recesso S con OBU cessato."""
-    if (_field(row, 'flag_recesso_obu') == 'S' and
-            _field(row, 'stato_obu') == 'CESSATO'):
-        return "Obu cessati per recesso."
+def _t1_32_att_riconse_catchall(row):
+    """ATT/RICONSE (catch-all)."""
+    if (_field(row, 'stato_contratto') == 'ATTIVO' and
+            _field(row, 'stato_dispositivo') == 'RICONSEGNATO'):
+        return "Dispositivo riconsegnato"
     return None
 
 
-def _r8_contratto_cessato_generico(row, text):
-    """Contratto CESSATO con qualsiasi stato dispositivo/obu non coperto sopra."""
-    if _field(row, 'stato_contratto') == 'CESSATO':
-        return ("Contratto cessato - non necessaria operazione su rimozione "
-                "dispositivi aggiuntivi - verificare se fatturazione canoni "
-                "coerente con richiesta cliente")
+# --- Branch E: Contratto ATTIVO + Dispositivo ATTIVO → passa a TIER2 ---
+
+def _t1_40_att_att(row):
+    """ATT/ATT/qualsiasi → None (serve TIER2)."""
+    if (_field(row, 'stato_contratto') == 'ATTIVO' and
+            _field(row, 'stato_dispositivo') == 'ATTIVO'):
+        return None
+    return None
+
+
+# --- Branch G: Stati speciali ---
+
+def _t1_60_sospeso(row):
+    """qualsiasi/SOSPESO/qualsiasi (non cessato)."""
+    if (_field(row, 'stato_contratto') != 'CESSATO' and
+            _field(row, 'stato_dispositivo') == 'SOSPESO'):
+        return "Dispositivo sospeso. Necessario allineamento IT"
+    return None
+
+
+def _t1_61_da_attivare(row):
+    """qualsiasi/DA ATTIVARE/qualsiasi."""
+    if _field(row, 'stato_dispositivo') == 'DA ATTIVARE':
+        return "Dispositivo da attivare, restituzione non applicabile"
+    return None
+
+
+def _t1_62_in_attivazione(row):
+    """IN ATTIVAZIONE/qualsiasi."""
+    if _field(row, 'stato_contratto') == 'IN ATTIVAZIONE':
+        return "Contratto in attivazione"
     return None
 
 
 TIER1_RULES = [
-    _r1_cessato_cessato_cessato,   # priorità 10
-    _r2_cessato_cessato_attivo,    # priorità 20
-    _r3_attivo_cessato_cessato,    # priorità 30
-    _r4_cessato_paga_fattura,      # priorità 40
-    _r5_attivo_cessato_attivo,     # priorità 50
-    _r6_cessato_sospeso_attivo,    # priorità 55
-    _r7_recesso_obu,               # priorità 57
-    _r8_contratto_cessato_generico,  # priorità 60
+    # Branch F: NOTE pre-emption
+    _t1_50_note_obu_non_presente,
+    _t1_51_note_obu_altro_contratto,
+    # Branch A: Contratto CESSATO (ordine specifico → generico)
+    _t1_01_cess_cess_cess,
+    _t1_02_cess_cess_att,
+    _t1_03_cess_riconse,
+    _t1_04_cess_sosp,
+    _t1_05_cess_att,
+    _t1_06_cess_catchall,
+    # Branch B: flag recesso
+    _t1_10_recesso_obu,
+    # Branch C: ATTIVO + Dispositivo CESSATO
+    _t1_20_att_cess_cess_rientro,
+    _t1_21_att_cess_cess_no_rientro,
+    _t1_22_att_cess_att_pagando,
+    _t1_23_att_cess_att,
+    # Branch D: ATTIVO + Dispositivo RICONSEGNATO
+    _t1_30_att_riconse_cess_rientro,
+    _t1_31_att_riconse_att,
+    _t1_32_att_riconse_catchall,
+    # Branch E: ATTIVO/ATTIVO → None (passa a TIER2, non serve in lista)
+    # Branch G: Stati speciali
+    _t1_60_sospeso,
+    _t1_61_da_attivare,
+    _t1_62_in_attivazione,
 ]
 
 
 # ═══════════════════════════════════════════════════════════════
-# TIER 2: Regole basate su keyword nei post/note
-# Ordine di priorità CRITICO: regole più specifiche PRIMA
+# TIER 2: Regole basate su keyword nei testi
+# Ordine CRITICO: azioni risolutive PRIMA di contatto ko
 # ═══════════════════════════════════════════════════════════════
 
-# --- PRIORITÀ ALTA: Intento esplicito del cliente (dalle note) ---
+# --- Keyword sets ---
+_OTP_SIGNALS = ['otp ok', 'con otp', 'procedura otp', 'codici otp', 'gestito con otp',
+                'inviati otp', 'inviato otp', 'tramite otp', 'otp inviati', 'otp inviato',
+                'codice otp', 'inserimento dei due otp', 'inserimento otp',
+                'inv.otp', 'invio codice otp', 'gestito ticket con codice otp',
+                'gestito ticket con invio codice otp']
+_OTP_NEG = ['non poteva', 'errore', 'ko otp', 'non funziona', 'non riesce', 'problema con otp',
+            'non riceve otp', 'non riceve codice', 'si rifiuta', 'problemi nell inserire',
+            'problemi otp', 'problemi a livello']
+_LDV_SIGNALS = ['lettera di vettura', 'ldv']
 
-def _r20_cambiato_idea(row, text):
-    """Cliente ha cambiato idea — rilevato da nota cliente o post."""
-    if _contains_any(text, ['cambiato idea', 'ha cambiato idea',
-                            'ripensato', 'ci ho ripensato',
-                            'non vuole più', 'non vuole piu',
-                            'non intende procedere',
-                            'vorrei tenerlo', 'vuole tenerlo',
-                            'annullare la spedizione',
-                            'non ho bisogno', 'non ne ho bisogno',
-                            'non mi serve piu', 'non mi serve più']):
+# --- Gruppo 1: Meta-ticket ---
+
+def _t2_01_ticket_doppio(row, text):
+    """Ticket duplicato/doppio."""
+    if re.search(r'gestito con ticket\s+I-\d+', text, re.IGNORECASE):
+        return "Ticket duplicato"
+    if re.search(r'già\s+lavorat[ao]\s+con\s+ticket', text, re.IGNORECASE):
+        return "Ticket duplicato"
+    if _word_match(text, ['ticket doppio', 'tkt doppio', 'tk doppio', 'tt doppio',
+                          'duplicato', 'in quanto doppio', 'perché doppio',
+                          'perche doppio']):
+        return "Ticket duplicato"
+    return None
+
+
+def _t2_02_annullato(row, text):
+    """Ticket annullato."""
+    # _contains_any instead of _word_match: posts often glue ticket ID to word (e.g. "I-123annullo")
+    if _contains_any(text, ['annullo ', 'annullo\n', 'annullato', 'annullata richiesta',
+                            'annullare rimozione', 'annullo ticket',
+                            'annulla pratica', 'annulla la procedura',
+                            'annulliamo', 'annulla la richiesta',
+                            'annulla procedura', 'annullare la pratica']):
+        return "Ticket annullato"
+    # Catch "I-XXXXXXannullo" pattern (ticket ID glued to word)
+    if re.search(r'I-\d+\s*annull', text, re.IGNORECASE):
+        return "Ticket annullato"
+    return None
+
+
+# --- Gruppo 2: Azioni risolutive ---
+
+def _t2_10_otp_ldv(row, text):
+    """OTP + LDV (flusso unico)."""
+    has_otp = _contains_any(text, _OTP_SIGNALS) and _contains_none(text, _OTP_NEG)
+    has_ldv = _contains_any(text, _LDV_SIGNALS)
+    if has_otp and has_ldv:
+        return "Eseguita procedura OTP e inviata lettera di vettura"
+    return None
+
+
+def _t2_11_solo_otp(row, text):
+    """Solo OTP (senza LDV)."""
+    has_otp = _contains_any(text, _OTP_SIGNALS) and _contains_none(text, _OTP_NEG)
+    has_ldv = _contains_any(text, _LDV_SIGNALS)
+    if has_otp and not has_ldv:
+        return "Eseguita procedura OTP"
+    return None
+
+
+def _t2_12_solo_ldv(row, text):
+    """Solo LDV (senza OTP)."""
+    has_otp = _contains_any(text, _OTP_SIGNALS)
+    has_ldv = _contains_any(text, _LDV_SIGNALS)
+    if has_ldv and not has_otp:
+        return "Inviata lettera di vettura"
+    return None
+
+
+# --- Gruppo 2b: Riconsegna effettuata ---
+
+def _t2_13_riconsegna(row, text):
+    """Procedura riconsegna effettuata."""
+    if _contains_any(text, ['procedura riconsegna', 'procedura per riconsegna',
+                            'effettuata riconsegna', 'riconsegna effettuata',
+                            'riconsegna completata']):
+        return "Effettuata procedura di riconsegna dispositivo"
+    return None
+
+
+# --- Gruppo 3: Escalation ---
+
+def _t2_20_ahd(row, text):
+    """Aperto AHD."""
+    if _contains_any(text, ['aperto ahd', 'apertura ahd', 'ahd cs']):
+        return "Aperto AHD"
+    return None
+
+
+# --- Gruppo 4: Intento cliente ---
+
+def _t2_30_cambiato_idea(row, text):
+    """Cliente ha cambiato idea."""
+    if _word_match(text, ['cambiato idea', 'cambia idea', 'ci ho ripensato',
+                          'ci ha ripensato', 'ha ripensato',
+                          'non intende procedere',
+                          'vorrei tenerlo', 'vuole tenerlo',
+                          'vuole tenere', 'vuole mantenere',
+                          'non vuole rimozione', 'non voleva rimuovere',
+                          'non vuole rimuovere',
+                          'non vuole più procedere', 'non vuole piu procedere']):
         return "Cliente ha cambiato idea"
     return None
 
 
-def _r21_due_contratti_recesso(row, text):
-    """Cliente ha due contratti, quello su cui ha chiesto restituzione ha un solo dispositivo."""
-    if _contains_any(text, ['due contratti']) and _contains_any(text, ['recesso', 'solo dispositivo', 'un solo']):
-        return ("Cliente ha due contratti, quello su cui ha chiesto restituzione "
-                "ha un solo dispositivo, deve fare recesso")
+def _t2_31_solo_dispositivo_recesso(row, text):
+    """Cliente ha un solo dispositivo → recesso."""
+    if _word_match(text, ['un solo dispositivo', 'unico dispositivo',
+                          'solo dispositivo']):
+        return "Cliente ha un solo dispositivo, deve procedere con recesso"
     return None
 
 
-def _r22_solo_dispositivo_recesso(row, text):
-    """Cliente ha un solo dispositivo, deve fare recesso."""
-    if _contains_any(text, ['un solo dispositivo', 'unico dispositivo',
-                            'solo dispositivo', 'un dispositivo solo',
-                            'un solo obu',
-                            'associato un solo dispositivo']):
-        return "Cliente ha un dispositivo solo deve fare recesso"
+def _t2_32_chiede_recesso(row, text):
+    """Cliente richiede recesso."""
+    if _word_match(text, ['chiede recesso', 'richiesta recesso',
+                          'procedura recesso', 'vuole recedere',
+                          'deve fare recesso', 'deve recedere']):
+        return "Cliente richiede procedura di recesso"
     return None
 
 
-def _r23_chiede_recesso(row, text):
-    """Cliente chiede esplicitamente recesso (nei post operatore)."""
-    if _contains_any(text, ['clt chiede recesso', 'cliente chiede recesso',
-                            'chiede recesso', 'deve fare recesso',
-                            'procedura per richiesta recesso']):
-        return "Cliente ha un dispositivo solo deve fare recesso"
+# --- Gruppo 5: Comunicazioni ---
+
+def _t2_40_mail_primaria(row, text):
+    """Mail inviata (solo se non è subordinata a OTP/LDV/AHD)."""
+    if _contains_any(text, ['inviata mail', 'invio mail', 'mandata mail', 'inviata email']):
+        # Filtro negativo: se ci sono OTP/LDV/AHD la mail è secondaria
+        if _contains_none(text, ['otp', 'ldv', 'lettera di vettura', 'ahd']):
+            return "Inviata comunicazione mail al cliente"
     return None
 
 
-# --- PRIORITÀ MEDIA-ALTA: Azione specifica completata ---
-
-def _r30_ticket_doppio(row, text):
-    """Ticket chiuso perché duplicato/doppio o già lavorato con altro ticket."""
-    # "gestito con ticket I-XXXXXX" o "già lavorata con ticket"
-    if re.search(r'gestito con ticket\s+I-\d+', text, re.IGNORECASE):
-        return ("Cliente apre ticket per rimozione secondo dispositivo, "
-                "tentativo contatto ko, apertura altro ticket chiuso perché doppio")
-    if re.search(r'già\s+lavorat[ao]\s+con\s+ticket', text, re.IGNORECASE):
-        return ("Cliente apre ticket per rimozione secondo dispositivo, "
-                "tentativo contatto ko, apertura altro ticket chiuso perché doppio")
-    if _contains_any(text, ['doppio', 'duplicato', 'già aperto',
-                            'chiuso perché doppio', 'perche doppio',
-                            'ticket doppio']):
-        return ("Cliente apre ticket per rimozione secondo dispositivo, "
-                "tentativo contatto ko, apertura altro ticket chiuso perché doppio")
-    return None
-
-
-def _r31_otp(row, text):
-    """Procedura OTP eseguita."""
-    if _contains_any(text, ['otp ok', 'con otp', 'procedura con otp',
-                            'procedura otp', 'codici otp']):
-        return "Eseguita procedura con OTP, ticket chiuso"
-    return None
-
-
-def _r32_ahd(row, text):
-    """Aperto AHD (richiesta help desk)."""
-    if _contains_any(text, ['aperto ahd', 'apertura ahd', 'ahd cs']):
-        if _field(row, 'STATO FATTURA') == 'OK':
-            return ("Dispositivo risulta ancora attivo, lo sta pagando. "
-                    "Verificare se rientrato a magazzino. Aperto ahd.")
-        return "Aperto ahd per invio lettera di vettura"
-    return None
-
-
-def _r33_lettera_vettura(row, text):
-    """Lettera di vettura inviata."""
-    if _contains_any(text, ['lettera di vettura', 'ldv']):
-        return "Dispositivo attivo, lettera di vettura inviata, ticket chiuso"
-    return None
-
-
-def _r34_mail(row, text):
-    """Mandata mail/email al cliente."""
-    if _contains_any(text, ['inviata mail', 'invio mail', 'mandata mail',
-                            'inviata email', 'invio email', 'mandata email',
-                            'inviata e-mail', 'invio e mail']):
-        return "Mandata mail a cliente. Ticket chiuso"
-    return None
-
-
-# --- PRIORITÀ BASSA: Contatto ko (generico, cattura molti casi) ---
-
-def _r40_contatto_ko(row, text):
-    """Mancato contatto con il cliente."""
+def _t2_41_contatto_ko(row, text):
+    """Mancato contatto con cliente."""
     if _contains_any(text, ['contatto ko', 'cont ko', 'contatti ko',
-                            'non risponde', 'mancato contatto',
-                            'cliente non risponde', 'clt non risponde',
-                            'per mancato contatto']):
-        return "Mancato ricontatto con cliente, ticket chiuso"
+                            'mancato contatto', 'non risponde']):
+        return "Mancato contatto con cliente"
     return None
 
 
-# Lista ordinata per priorità
-# L'ordine rispecchia il comportamento dell'analista manuale:
-# 1. Intento esplicito cliente (cambiato idea, recesso)
-# 2. Contatto ko (pattern dominante nell'analisi manuale)
-# 3. Azioni specifiche (OTP, LDV, AHD, mail)
-# 4. Ticket doppio
+# --- Gruppo 6: Safety net — template nota chiusura ---
+
+def _t2_50_nota_provato_contattarti(row, text):
+    """Nota chiusura: provato a contattarti."""
+    if _contains_any(text, ['provato a contattarti', 'non abbiamo ricevuto risposta']):
+        return "Mancato contatto con cliente"
+    return None
+
+
+def _t2_51_nota_finalizzato_rimozione(row, text):
+    """Nota chiusura: finalizzato rimozione."""
+    if _contains_any(text, ['finalizzato la richiesta di rimozione']):
+        return "Rimozione dispositivo completata"
+    return None
+
+
+def _t2_52_nota_puoi_recedere(row, text):
+    """Nota chiusura: puoi recedere."""
+    if _contains_any(text, ['puoi recedere dal contratto']):
+        return "Comunicata procedura di recesso"
+    return None
+
+
+def _t2_53_nota_consegnare_pacco(row, text):
+    """Nota chiusura: consegnare pacco."""
+    if _contains_any(text, ['consegnare il tuo pacco', 'rete punto poste']):
+        return "Inviata lettera di vettura"
+    return None
+
+
 TIER2_RULES = [
-    # Intento cliente (massima priorità)
-    _r20_cambiato_idea,
-    _r21_due_contratti_recesso,
-    _r22_solo_dispositivo_recesso,
-    _r23_chiede_recesso,
-    # Contatto ko (alta priorità, come usato dall'analista)
-    _r40_contatto_ko,
-    # Azioni specifiche
-    _r30_ticket_doppio,
-    _r31_otp,
-    _r32_ahd,
-    _r33_lettera_vettura,
-    _r34_mail,
+    # Gruppo 1: Meta-ticket
+    _t2_01_ticket_doppio,
+    _t2_02_annullato,
+    # Gruppo 2: Azioni risolutive (priorità massima)
+    _t2_10_otp_ldv,
+    _t2_11_solo_otp,
+    _t2_12_solo_ldv,
+    # Gruppo 2b: Riconsegna
+    _t2_13_riconsegna,
+    # Gruppo 3: Escalation
+    _t2_20_ahd,
+    # Gruppo 4: Intento cliente
+    _t2_30_cambiato_idea,
+    _t2_31_solo_dispositivo_recesso,
+    _t2_32_chiede_recesso,
+    # Gruppo 5: Comunicazioni (solo se primaria)
+    _t2_40_mail_primaria,
+    _t2_41_contatto_ko,
+    # Gruppo 6: Safety net — template nota chiusura
+    _t2_50_nota_provato_contattarti,
+    _t2_51_nota_finalizzato_rimozione,
+    _t2_52_nota_puoi_recedere,
+    _t2_53_nota_consegnare_pacco,
 ]
+
+
+# ═══════════════════════════════════════════════════════════════
+# MODIFIER: "sta pagando"
+# ═══════════════════════════════════════════════════════════════
+
+_NO_PAGANDO_PATTERNS = [
+    'cambiato idea',
+    'recesso',
+    'duplicato',
+    'annullato',
+    'cessato',
+    'rientrato',
+    'completata',
+]
+
+
+def _add_sta_pagando(result, row):
+    """Aggiunge 'Sta pagando' se STATO FATTURA=OK e dispositivo ATTIVO."""
+    result_lower = result.lower()
+    if any(pat in result_lower for pat in _NO_PAGANDO_PATTERNS):
+        return result
+    if (_field(row, 'STATO FATTURA') == 'OK' and
+            _field(row, 'stato_dispositivo') == 'ATTIVO' and
+            'pagando' not in result_lower and
+            'paga' not in result_lower):
+        result += ". Sta pagando il dispositivo"
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════
 # RULE ENGINE
 # ═══════════════════════════════════════════════════════════════
-
-# Risultati per cui NON aggiungere "sta pagando"
-_NO_PAGANDO_PATTERNS = [
-    'cambiato idea',       # il cliente vuole tenerlo, pagare è normale
-    'recesso',             # deve cessare il contratto, pagamento non è il punto
-    'doppio',              # ticket duplicato, irrilevante
-    'due contratti',       # questione contrattuale, non di pagamento
-]
-
 
 class RuleEngine:
     """Valuta le regole in ordine di priorità e ritorna la prima che matcha."""
@@ -325,74 +562,69 @@ class RuleEngine:
                  post_text='', note_cliente_text=''):
         """
         Valuta tutte le regole in ordine.
-        row: pd.Series o dict con i campi strutturati
-        ticket_text: testo dei post/note del ticket specifico
-        client_text: testo dei post del cliente (altri ticket)
-        all_text: concatenazione di entrambi
-        post_text: solo i post operatore (non usato nel flusso base)
-        note_cliente_text: solo le note scritte dal cliente
         Returns: stringa con l'analisi
         """
-        # Tier 1: regole deterministiche (non servono i testi)
+        # 1. TIER1 (solo stati) → se matcha, ritorna con modifier
         for rule_fn in self.tier1_rules:
-            result = rule_fn(row, all_text)
+            result = rule_fn(row)
             if result is not None:
-                return result
+                return _add_sta_pagando(result, row)
 
-        # Pre-check: se la nota cliente indica chiaramente "cambiato idea",
-        # dai priorità a questo prima di cercare keyword operatore
+        # 2. Pre-check nota_cliente per "cambiato idea"
         if note_cliente_text:
-            result = _r20_cambiato_idea(row, note_cliente_text)
+            result = _t2_30_cambiato_idea(row, note_cliente_text)
             if result is not None:
-                return self._apply_modifiers(result, row)
+                return _add_sta_pagando(result, row)
 
-        # Tier 2: keyword matching sul testo del ticket (post + note)
+        # 3. TIER2 su post_text (post operatore — fonte più affidabile)
+        for rule_fn in self.tier2_rules:
+            result = rule_fn(row, post_text)
+            if result is not None:
+                return _add_sta_pagando(result, row)
+
+        # 4. TIER2 su ticket_text (post + tutte le note)
         for rule_fn in self.tier2_rules:
             result = rule_fn(row, ticket_text)
             if result is not None:
-                return self._apply_modifiers(result, row)
+                return _add_sta_pagando(result, row)
 
-        # Poi cerca nei testi del cliente (possono riguardare altri ticket)
+        # 5. TIER2 su client_text (post anagrafica — ultima spiaggia)
         for rule_fn in self.tier2_rules:
             result = rule_fn(row, client_text)
             if result is not None:
-                return self._apply_modifiers(result, row)
+                return _add_sta_pagando(result, row)
 
-        # Fallback
-        return self._fallback(row, all_text)
+        # 6. Fallback
+        return self._fallback(row)
 
-    def _apply_modifiers(self, result, row):
-        """Applica modificatori trasversali al risultato."""
-        result_lower = result.lower()
-
-        # Non aggiungere "sta pagando" se il risultato lo rende irrilevante
-        if any(pat in result_lower for pat in _NO_PAGANDO_PATTERNS):
-            return result
-
-        # Se sta pagando e non è già menzionato nel risultato
-        if (_field(row, 'STATO FATTURA') == 'OK' and
-                _field(row, 'stato_dispositivo') == 'ATTIVO' and
-                'pagando' not in result_lower and
-                'paga' not in result_lower):
-            result += ". Sta pagando il dispositivo"
-        return result
-
-    def _fallback(self, row, all_text):
+    def _fallback(self, row):
         """Analisi di fallback quando nessuna regola matcha."""
         status = _field(row, 'pystatuswork')
         disp = _field(row, 'stato_dispositivo')
+        obu = _field(row, 'stato_obu')
 
         if 'REJECTED' in status:
-            # Cerca pattern specifici per ticket rejected
-            if _contains_any(all_text, ['recesso', 'deve fare recesso']):
-                return "Ticket rifiutato in quanto deve fare recesso"
-            if _contains_any(all_text, ['informativo', 'ticket informativo']):
-                return "Ticket informativo"
-            return "Ticket rifiutato, verificare motivo nei post"
+            ctx = f" (dispositivo: {disp or '?'}, OBU: {obu or '?'})"
+            return "Ticket rifiutato" + ctx
 
-        if disp == 'ATTIVO':
-            if _field(row, 'STATO FATTURA') == 'OK':
-                return "Dispositivo attivo, ticket chiuso. Sta pagando il dispositivo"
-            return "Dispositivo attivo, ticket chiuso"
+        if 'CANCELLED' in status:
+            return "Ticket annullato"
 
+        if 'EXPIRED' in status:
+            return "Ticket scaduto"
+
+        if status in ('OPEN', 'NEW') or 'OPEN' in status:
+            return "Ticket ancora aperto"
+
+        # Default: descrizione stati
+        parts = []
+        if disp:
+            parts.append(f"Dispositivo {disp}")
+        if obu:
+            parts.append(f"OBU {obu}")
+        if _has_rientro(row):
+            parts.append("rientrato a magazzino")
+
+        if parts:
+            return '. '.join(parts)
         return "Ticket chiuso"
