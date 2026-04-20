@@ -19,6 +19,8 @@ class DataLoader:
         df_post_ticket = self._read_sheet('Post su TicketID')
         df_notes = self._read_sheet('NoteByTicketID')
 
+        self._augment_obu_count()
+
         print(f"  Tab principale: {len(self.df_main)} righe")
         print(f"  Post Pulse: {len(df_post_pulse)} righe")
         print(f"  Post Ticket: {len(df_post_ticket)} righe")
@@ -33,6 +35,30 @@ class DataLoader:
         print(f"  Lookup Note: {len(self.notes_lookup)} ticket")
 
         return self
+
+    def _augment_obu_count(self):
+        """Aggiunge num_obu_contratto = n° serialnumber distinti per contrattoid.
+
+        Il file non contiene un campo autoritativo "quanti OBU ha il contratto".
+        Lo stimiamo contando i serialnumber distinti che compaiono nei ticket per
+        lo stesso contratto. È un proxy: dice "quanti OBU di questo contratto
+        hanno generato almeno un ticket nel dataset", non "quanti OBU possiede
+        davvero il cliente". Per la maggior parte dei casi i due numeri coincidono.
+        """
+        if 'contrattoid' not in self.df_main.columns or 'serialnumber' not in self.df_main.columns:
+            return
+        serial_valid = self.df_main['serialnumber'].where(
+            self.df_main['serialnumber'].astype(str).str.lower().isin(['nan', 'none', '']) == False
+        )
+        count_per_contratto = (
+            self.df_main.assign(_s=serial_valid)
+                        .dropna(subset=['_s'])
+                        .groupby('contrattoid')['_s']
+                        .nunique()
+        )
+        self.df_main['num_obu_contratto'] = (
+            self.df_main['contrattoid'].map(count_per_contratto).fillna(0).astype(int).astype(str)
+        )
 
     def _read_sheet(self, sheet_name: str) -> pd.DataFrame:
         df = pd.read_excel(self.input_file, sheet_name=sheet_name, dtype=str)

@@ -139,19 +139,25 @@ def _t1_51_note_obu_altro_contratto(row):
 
 # --- Branch F2: Mismatch numero OBU (TIER1 pre-emption) ---
 
-def _t1_52_un_solo_obu_richiede_recesso_secondo(row):
-    """Premessa contraddetta: il ticket riguarda un secondo OBU ma il contratto ne ha uno solo.
+def _t1_52_rejected_un_solo_obu(row):
+    """Ticket rigettato + contratto con 1 solo OBU nel dataset.
 
-    Tutti i ticket partono dall'assunto che il cliente abbia ricevuto un secondo
-    dispositivo. Se num_obu=1, la premessa è incongruente con i dati strutturali:
-    o il secondo OBU non è mai stato attivato/registrato, o il cliente sta
-    chiedendo qualcosa di diverso (recesso totale, reclamo, ecc.).
+    Matcha il pattern del caso I-2188956: cliente chiede restituzione del
+    secondo dispositivo ma il contratto ha un solo OBU, quindi il ticket
+    viene rigettato con indicazione di fare recesso totale.
+
+    Condizioni: pystatuswork contiene REJECTED AND num_obu_contratto=1.
+    Non firiamo sul solo num_obu_contratto=1 perché sarebbe 94% dei contratti —
+    il segnale diventa rumore. Lo stato REJECTED stringe il pattern al caso reale.
+
+    num_obu_contratto è un PROXY calcolato in DataLoader come
+    n° serialnumber distinti per contrattoid.
     """
-    num_obu_raw = _field(row, 'num_obu')
-    if num_obu_raw == '1':
-        return ("ANOMALIA: Il ticket presuppone un secondo dispositivo ma il contratto "
-                "ha un solo OBU. Verificare se il secondo OBU non risulta registrato "
-                "o se il cliente necessita di recesso totale")
+    num_obu = _field(row, 'num_obu_contratto')
+    if num_obu == '1' and _is_rejected(row):
+        return ("ANOMALIA: Ticket rigettato — il contratto risulta avere 1 solo OBU "
+                "nel dataset. Probabile richiesta di restituzione secondo dispositivo "
+                "incongruente: verificare se serve recesso totale")
     return None
 
 
@@ -326,8 +332,8 @@ TIER1_RULES = [
     # Branch F: NOTE pre-emption
     _t1_50_note_obu_non_presente,
     _t1_51_note_obu_altro_contratto,
-    # Branch F2: Mismatch numero OBU
-    _t1_52_un_solo_obu_richiede_recesso_secondo,
+    # Branch F2: Mismatch numero OBU (rejected + 1 OBU nel dataset)
+    _t1_52_rejected_un_solo_obu,
     # Branch A: Contratto CESSATO (ordine specifico → generico)
     _t1_01_cess_cess_cess,
     _t1_02_cess_cess_att,
