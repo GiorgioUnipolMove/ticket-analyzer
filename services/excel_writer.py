@@ -15,9 +15,24 @@ class ExcelWriter:
     HEADER_FONT = Font(bold=True, color='FFFFFF', name='Arial', size=10)
     ANALISI_FILL = PatternFill('solid', fgColor='FFF2CC')
     MANUAL_FILL = PatternFill('solid', fgColor='D9E2F3')
+    # Arancione per flag anomalie multi-ticket
+    FLAG_FILL = PatternFill('solid', fgColor='FCE4D6')
     BODY_FONT = Font(name='Arial', size=10)
 
-    def write(self, df_main: pd.DataFrame, results: dict, output_file: str):
+    def write(self, df_main: pd.DataFrame, results: dict, output_file: str,
+              multi_ticket_flags: dict = None):
+        """Genera il file Excel di output.
+
+        Args:
+            df_main: DataFrame principale (tab Restituzione_Device_Agg).
+            results: Mappa ticket_id → testo analisi.
+            output_file: Percorso del file di output.
+            multi_ticket_flags: Mappa ticket_id → flag anomalia multi-ticket
+                (opzionale, prodotto da RuleBasedAnalyzer).
+        """
+        if multi_ticket_flags is None:
+            multi_ticket_flags = {}
+
         print(f"\nGenerazione output: {output_file}")
 
         df_out = df_main.copy()
@@ -46,6 +61,18 @@ class ExcelWriter:
                     df_out.at[idx, 'Analisi Manuale'] = manual_map[tid]
             manual_count = sum(1 for v in manual_map.values() if v)
             print(f"  📋 {manual_count} analisi manuali caricate per confronto")
+
+        # Aggiungi colonna Flag Contratto (ticket multipli con esiti discordanti)
+        manual_col_idx = df_out.columns.get_loc('Analisi Manuale') + 1
+        df_out.insert(manual_col_idx, 'Flag Contratto', '')
+        if multi_ticket_flags:
+            flagged_count = 0
+            for idx, row in df_out.iterrows():
+                tid = str(row.get('id_interaction', '')).strip()
+                if tid in multi_ticket_flags:
+                    df_out.at[idx, 'Flag Contratto'] = multi_ticket_flags[tid]
+                    flagged_count += 1
+            print(f"  Ticket con flag contratto multiplo: {flagged_count}")
 
         # Rimuovi ClienteID dall'output
         if 'ClienteID' in df_out.columns:
@@ -90,14 +117,17 @@ class ExcelWriter:
             cell.font = self.HEADER_FONT
             cell.alignment = Alignment(horizontal='center', wrap_text=True)
 
-        # Trova colonne Analisi e Analisi Manuale
+        # Trova colonne Analisi, Analisi Manuale e Flag Contratto
         analisi_col = None
         manual_col = None
+        flag_col = None
         for idx, cell in enumerate(ws[1], 1):
             if cell.value == 'Analisi':
                 analisi_col = idx
             elif cell.value == 'Analisi Manuale':
                 manual_col = idx
+            elif cell.value == 'Flag Contratto':
+                flag_col = idx
 
         # Evidenzia colonna Analisi (giallo)
         if analisi_col:
@@ -111,6 +141,14 @@ class ExcelWriter:
             for row in ws.iter_rows(min_row=2, min_col=manual_col, max_col=manual_col):
                 for cell in row:
                     cell.fill = self.MANUAL_FILL
+                    cell.font = self.BODY_FONT
+
+        # Evidenzia colonna Flag Contratto (arancione) — solo celle non vuote
+        if flag_col:
+            for row in ws.iter_rows(min_row=2, min_col=flag_col, max_col=flag_col):
+                for cell in row:
+                    if cell.value:
+                        cell.fill = self.FLAG_FILL
                     cell.font = self.BODY_FONT
 
         # Auto-width

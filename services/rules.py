@@ -1,5 +1,17 @@
 """
 Rule engine per l'analisi deterministica dei ticket.
+
+CONTESTO UNIVERSALE:
+  Tutti i ticket nascono perché il cliente ha RICEVUTO un secondo dispositivo OBU
+  (o un dispositivo aggiuntivo), spesso senza averlo esplicitamente richiesto.
+  L'analisi deve capire:
+    - se il cliente ha effettivamente ricevuto un dispositivo extra
+    - se lo aveva richiesto o no
+    - se vuole restituirlo / se è già stato restituito
+    - se i dati strutturali confermano la presenza del secondo dispositivo
+  Anomalia tipica: il cliente lamenta di avere 1 solo OBU (premessa contraddetta),
+  oppure dichiara di averne ricevuti 2 aggiuntivi, o di possederne 3.
+
 TIER1: regole basate solo su stati strutturati (no testo).
 TIER2: regole basate su keyword nei testi (post/note).
 """
@@ -50,9 +62,13 @@ def _is_rejected(row):
     return 'REJECTED' in _field(row, 'pystatuswork')
 
 
-def _sta_pagando(row):
-    """True se STATO FATTURA=OK AND stato_obu=ATTIVO."""
-    return _field(row, 'STATO FATTURA') == 'OK' and _field(row, 'stato_obu') == 'ATTIVO'
+def _fattura_attiva(row):
+    """True se STATO FATTURA=OK (processo di fatturazione attivo — NON implica pagamento effettivo).
+
+    ATTENZIONE: FATTURA OK significa solo che il ciclo di fatturazione è in corso,
+    NON che il cliente stia effettivamente pagando.
+    """
+    return _field(row, 'STATO FATTURA') == 'OK'
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -118,6 +134,24 @@ def _t1_51_note_obu_altro_contratto(row):
     """NOTE = OBU ASSOCIATO AD ALTRO CONTRATTO."""
     if _field(row, 'NOTE') == 'OBU ASSOCIATO AD ALTRO CONTRATTO':
         return "OBU associato ad altro contratto"
+    return None
+
+
+# --- Branch F2: Mismatch numero OBU (TIER1 pre-emption) ---
+
+def _t1_52_un_solo_obu_richiede_recesso_secondo(row):
+    """Premessa contraddetta: il ticket riguarda un secondo OBU ma il contratto ne ha uno solo.
+
+    Tutti i ticket partono dall'assunto che il cliente abbia ricevuto un secondo
+    dispositivo. Se num_obu=1, la premessa è incongruente con i dati strutturali:
+    o il secondo OBU non è mai stato attivato/registrato, o il cliente sta
+    chiedendo qualcosa di diverso (recesso totale, reclamo, ecc.).
+    """
+    num_obu_raw = _field(row, 'num_obu')
+    if num_obu_raw == '1':
+        return ("ANOMALIA: Il ticket presuppone un secondo dispositivo ma il contratto "
+                "ha un solo OBU. Verificare se il secondo OBU non risulta registrato "
+                "o se il cliente necessita di recesso totale")
     return None
 
 
@@ -203,13 +237,16 @@ def _t1_21_att_cess_cess_no_rientro(row):
     return None
 
 
-def _t1_22_att_cess_att_pagando(row):
-    """ATT/CESS/ATT + FATTURA OK."""
+def _t1_22_att_cess_att_fattura(row):
+    """ATT/CESS/ATT + FATTURA OK.
+
+    NOTA: FATTURA OK = ciclo di fatturazione attivo, non prova di pagamento.
+    """
     if (_field(row, 'stato_contratto') == 'ATTIVO' and
             _field(row, 'stato_dispositivo') == 'CESSATO' and
             _field(row, 'stato_obu') == 'ATTIVO' and
             _field(row, 'STATO FATTURA') == 'OK'):
-        return "Dispositivo cessato ma OBU ancora attivo. Sta pagando"
+        return "Dispositivo cessato ma OBU ancora attivo. Fatturazione attiva (verifica allineamento IT)"
     return None
 
 
@@ -289,6 +326,8 @@ TIER1_RULES = [
     # Branch F: NOTE pre-emption
     _t1_50_note_obu_non_presente,
     _t1_51_note_obu_altro_contratto,
+    # Branch F2: Mismatch numero OBU
+    _t1_52_un_solo_obu_richiede_recesso_secondo,
     # Branch A: Contratto CESSATO (ordine specifico → generico)
     _t1_01_cess_cess_cess,
     _t1_02_cess_cess_att,
@@ -301,7 +340,7 @@ TIER1_RULES = [
     # Branch C: ATTIVO + Dispositivo CESSATO
     _t1_20_att_cess_cess_rientro,
     _t1_21_att_cess_cess_no_rientro,
-    _t1_22_att_cess_att_pagando,
+    _t1_22_att_cess_att_fattura,
     _t1_23_att_cess_att,
     # Branch D: ATTIVO + Dispositivo RICONSEGNATO
     _t1_30_att_riconse_cess_rientro,
@@ -330,6 +369,41 @@ _OTP_NEG = ['non poteva', 'errore', 'ko otp', 'non funziona', 'non riesce', 'pro
             'non riceve otp', 'non riceve codice', 'si rifiuta', 'problemi nell inserire',
             'problemi otp', 'problemi a livello']
 _LDV_SIGNALS = ['lettera di vettura', 'ldv']
+
+# --- Gruppo 0: Anomalie conteggio OBU (massima priorità TIER2) ---
+
+# Pattern che indicano che il cliente possiede 3 OBU
+_TRE_OBU_PATTERNS = [
+    'tre obu', '3 obu', 'tre dispositivi', '3 dispositivi',
+    'tre apparati', '3 apparati', 'terzo dispositivo', 'terzo obu',
+    'ha tre', 'ha 3 obu', '3 box', 'tre box',
+]
+
+# Pattern che indicano che il cliente ha ricevuto 2 OBU aggiuntivi (invece di 1)
+_DUE_OBU_AGGIUNTIVI_PATTERNS = [
+    'due obu aggiuntivi', '2 obu aggiuntivi', 'due dispositivi aggiuntivi',
+    '2 dispositivi aggiuntivi', 'due aggiuntivi', '2 aggiuntivi',
+    'ricevuto due', 'ricevuti due obu', 'arrivati due', 'arrivati 2 obu',
+    'inviati due obu', 'inviato due obu',
+    'due box aggiuntivi', '2 box aggiuntivi',
+]
+
+
+def _t2_00_tre_obu(row, text):
+    """Cliente ha 3 OBU: la richiesta di 'secondo dispositivo' è potenzialmente ambigua."""
+    if _contains_any(text, _TRE_OBU_PATTERNS):
+        return ("ANOMALIA OBU: Testo suggerisce presenza di 3 dispositivi OBU. "
+                "Verificare quale dei due dispositivi aggiuntivi si intende restituire")
+    return None
+
+
+def _t2_00b_due_obu_aggiuntivi(row, text):
+    """Cliente ha ricevuto 2 OBU aggiuntivi invece di 1: anomalia nella spedizione/attivazione."""
+    if _contains_any(text, _DUE_OBU_AGGIUNTIVI_PATTERNS):
+        return ("ANOMALIA OBU: Testo indica ricezione di 2 dispositivi aggiuntivi (invece di 1). "
+                "Verificare quale restituire e se entrambi sono stati attivati")
+    return None
+
 
 # --- Gruppo 1: Meta-ticket ---
 
@@ -427,10 +501,19 @@ def _t2_30_cambiato_idea(row, text):
 
 
 def _t2_31_solo_dispositivo_recesso(row, text):
-    """Cliente ha un solo dispositivo → recesso."""
+    """Cliente dichiara di avere 1 solo dispositivo → premessa del ticket contraddetta.
+
+    Contesto: il ticket esiste perché si presume che il cliente abbia ricevuto un
+    secondo OBU. Se il cliente stesso dichiara di averne uno solo, la premessa è
+    contraddetta: il secondo dispositivo non è mai arrivato, oppure c'è un errore
+    nell'apertura del ticket.
+    """
     if _word_match(text, ['un solo dispositivo', 'unico dispositivo',
-                          'solo dispositivo']):
-        return "Cliente ha un solo dispositivo, deve procedere con recesso"
+                          'solo dispositivo', 'un solo obu', 'unico obu',
+                          'solo un obu', 'solo un dispositivo']):
+        return ("ANOMALIA: Cliente dichiara di avere un solo dispositivo — premessa "
+                "del ticket contraddetta. Verificare se il secondo OBU è mai stato "
+                "consegnato o se è necessario recesso totale")
     return None
 
 
@@ -493,6 +576,9 @@ def _t2_53_nota_consegnare_pacco(row, text):
 
 
 TIER2_RULES = [
+    # Gruppo 0: Anomalie conteggio OBU (massima priorità TIER2)
+    _t2_00_tre_obu,
+    _t2_00b_due_obu_aggiuntivi,
     # Gruppo 1: Meta-ticket
     _t2_01_ticket_doppio,
     _t2_02_annullato,
@@ -520,10 +606,11 @@ TIER2_RULES = [
 
 
 # ═══════════════════════════════════════════════════════════════
-# MODIFIER: "sta pagando"
+# MODIFIER: fatturazione attiva
+# NOTA: FATTURA OK = ciclo di fatturazione attivo, NON prova di pagamento
 # ═══════════════════════════════════════════════════════════════
 
-_NO_PAGANDO_PATTERNS = [
+_NO_FATTURA_APPEND_PATTERNS = [
     'cambiato idea',
     'recesso',
     'duplicato',
@@ -531,19 +618,24 @@ _NO_PAGANDO_PATTERNS = [
     'cessato',
     'rientrato',
     'completata',
+    'fatturazione',
 ]
 
 
-def _add_sta_pagando(result, row):
-    """Aggiunge 'Sta pagando' se STATO FATTURA=OK e dispositivo ATTIVO."""
+def _add_fattura_attiva(result, row):
+    """Aggiunge nota sulla fatturazione attiva se STATO FATTURA=OK e dispositivo ATTIVO.
+
+    IMPORTANTE: FATTURA OK significa che il ciclo di fatturazione è in corso,
+    NON che il cliente stia pagando. Non usare la dicitura "Sta pagando".
+    """
     result_lower = result.lower()
-    if any(pat in result_lower for pat in _NO_PAGANDO_PATTERNS):
+    if any(pat in result_lower for pat in _NO_FATTURA_APPEND_PATTERNS):
         return result
     if (_field(row, 'STATO FATTURA') == 'OK' and
             _field(row, 'stato_dispositivo') == 'ATTIVO' and
-            'pagando' not in result_lower and
-            'paga' not in result_lower):
-        result += ". Sta pagando il dispositivo"
+            'fatturazione' not in result_lower and
+            'fattura' not in result_lower):
+        result += ". Fatturazione attiva sul dispositivo"
     return result
 
 
@@ -568,31 +660,31 @@ class RuleEngine:
         for rule_fn in self.tier1_rules:
             result = rule_fn(row)
             if result is not None:
-                return _add_sta_pagando(result, row)
+                return _add_fattura_attiva(result, row)
 
         # 2. Pre-check nota_cliente per "cambiato idea"
         if note_cliente_text:
             result = _t2_30_cambiato_idea(row, note_cliente_text)
             if result is not None:
-                return _add_sta_pagando(result, row)
+                return _add_fattura_attiva(result, row)
 
         # 3. TIER2 su post_text (post operatore — fonte più affidabile)
         for rule_fn in self.tier2_rules:
             result = rule_fn(row, post_text)
             if result is not None:
-                return _add_sta_pagando(result, row)
+                return _add_fattura_attiva(result, row)
 
         # 4. TIER2 su ticket_text (post + tutte le note)
         for rule_fn in self.tier2_rules:
             result = rule_fn(row, ticket_text)
             if result is not None:
-                return _add_sta_pagando(result, row)
+                return _add_fattura_attiva(result, row)
 
         # 5. TIER2 su client_text (post anagrafica — ultima spiaggia)
         for rule_fn in self.tier2_rules:
             result = rule_fn(row, client_text)
             if result is not None:
-                return _add_sta_pagando(result, row)
+                return _add_fattura_attiva(result, row)
 
         # 6. Fallback
         return self._fallback(row)
