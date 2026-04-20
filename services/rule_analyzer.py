@@ -20,6 +20,8 @@ class RuleBasedAnalyzer:
         self._contract_tickets: dict[str, list[str]] = defaultdict(list)
         # Flag anomalie multi-ticket: ticket_id → stringa di flag
         self.multi_ticket_flags: dict[str, str] = {}
+        # Flag 1-OBU sospetto (contratto con 1 solo OBU + ticket rejected)
+        self.obu_flags: dict[str, str] = {}
 
     def run(self, start_idx: int, end_idx: int, results: dict) -> dict:
         total = end_idx - start_idx
@@ -34,6 +36,15 @@ class RuleBasedAnalyzer:
             contratto = str(row.get('contrattoid', '')).strip()
             if contratto and contratto.lower() not in ('nan', '', 'none'):
                 self._contract_tickets[contratto].append(tid)
+
+            # Flag 1-OBU: contratto con 1 serialnumber distinto + ticket rejected.
+            # È un segnale per review manuale, non sovrascrive l'analisi primaria.
+            num_obu = str(row.get('num_obu_contratto', '')).strip()
+            pystatus = str(row.get('pystatuswork', '')).strip().upper()
+            if num_obu == '1' and 'REJECTED' in pystatus:
+                self.obu_flags[tid] = ("1 OBU nel dataset + ticket rejected: "
+                                       "possibile richiesta restituzione secondo dispositivo "
+                                       "senza secondo dispositivo. Verificare se serve recesso totale")
 
             # Skip se già analizzato (resume)
             if tid in results:

@@ -89,12 +89,15 @@ def main():
     # Analisi
     results = analyzer.run(start_idx, end_idx, results)
 
-    # Recupera flag multi-ticket (solo per rule-based analyzer)
+    # Recupera flag multi-ticket e 1-OBU (solo per rule-based analyzer)
     multi_ticket_flags = getattr(analyzer, 'multi_ticket_flags', {})
+    obu_flags = getattr(analyzer, 'obu_flags', {})
 
     # Scrivi output
     writer = ExcelWriter()
-    writer.write(data.df_main, results, args.output, multi_ticket_flags=multi_ticket_flags)
+    writer.write(data.df_main, results, args.output,
+                 multi_ticket_flags=multi_ticket_flags,
+                 obu_flags=obu_flags)
 
     print(f"\n{'=' * 60}")
     print(f"✅ COMPLETATO — Output: {args.output}")

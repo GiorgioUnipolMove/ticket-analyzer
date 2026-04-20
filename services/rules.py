@@ -332,8 +332,9 @@ TIER1_RULES = [
     # Branch F: NOTE pre-emption
     _t1_50_note_obu_non_presente,
     _t1_51_note_obu_altro_contratto,
-    # Branch F2: Mismatch numero OBU (rejected + 1 OBU nel dataset)
-    _t1_52_rejected_un_solo_obu,
+    # NOTE: _t1_52 rimosso da TIER1 — il pattern REJECTED+1 OBU era troppo largo
+    # (8.4k ticket, 95% falsi positivi). Il segnale è spostato in Flag 1-OBU
+    # (colonna a parte nel file Excel), non sovrascrive più l'analisi primaria.
     # Branch A: Contratto CESSATO (ordine specifico → generico)
     _t1_01_cess_cess_cess,
     _t1_02_cess_cess_att,

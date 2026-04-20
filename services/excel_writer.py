@@ -17,21 +17,26 @@ class ExcelWriter:
     MANUAL_FILL = PatternFill('solid', fgColor='D9E2F3')
     # Arancione per flag anomalie multi-ticket
     FLAG_FILL = PatternFill('solid', fgColor='FCE4D6')
+    # Rosa per flag 1-OBU sospetto
+    OBU_FLAG_FILL = PatternFill('solid', fgColor='F4CCCC')
     BODY_FONT = Font(name='Arial', size=10)
 
     def write(self, df_main: pd.DataFrame, results: dict, output_file: str,
-              multi_ticket_flags: dict = None):
+              multi_ticket_flags: dict = None, obu_flags: dict = None):
         """Genera il file Excel di output.
 
         Args:
             df_main: DataFrame principale (tab Restituzione_Device_Agg).
             results: Mappa ticket_id → testo analisi.
             output_file: Percorso del file di output.
-            multi_ticket_flags: Mappa ticket_id → flag anomalia multi-ticket
-                (opzionale, prodotto da RuleBasedAnalyzer).
+            multi_ticket_flags: Mappa ticket_id → flag anomalia multi-ticket.
+            obu_flags: Mappa ticket_id → flag 1-OBU sospetto (rejected + contratto
+                con 1 solo serialnumber distinto).
         """
         if multi_ticket_flags is None:
             multi_ticket_flags = {}
+        if obu_flags is None:
+            obu_flags = {}
 
         print(f"\nGenerazione output: {output_file}")
 
@@ -73,6 +78,18 @@ class ExcelWriter:
                     df_out.at[idx, 'Flag Contratto'] = multi_ticket_flags[tid]
                     flagged_count += 1
             print(f"  Ticket con flag contratto multiplo: {flagged_count}")
+
+        # Aggiungi colonna Flag 1-OBU (contratto con 1 solo OBU + rejected)
+        flag_col_idx = df_out.columns.get_loc('Flag Contratto') + 1
+        df_out.insert(flag_col_idx, 'Flag 1-OBU', '')
+        if obu_flags:
+            obu_flagged = 0
+            for idx, row in df_out.iterrows():
+                tid = str(row.get('id_interaction', '')).strip()
+                if tid in obu_flags:
+                    df_out.at[idx, 'Flag 1-OBU'] = obu_flags[tid]
+                    obu_flagged += 1
+            print(f"  Ticket con flag 1-OBU: {obu_flagged}")
 
         # Rimuovi ClienteID dall'output
         if 'ClienteID' in df_out.columns:
@@ -117,10 +134,11 @@ class ExcelWriter:
             cell.font = self.HEADER_FONT
             cell.alignment = Alignment(horizontal='center', wrap_text=True)
 
-        # Trova colonne Analisi, Analisi Manuale e Flag Contratto
+        # Trova colonne Analisi, Analisi Manuale, Flag Contratto, Flag 1-OBU
         analisi_col = None
         manual_col = None
         flag_col = None
+        obu_flag_col = None
         for idx, cell in enumerate(ws[1], 1):
             if cell.value == 'Analisi':
                 analisi_col = idx
@@ -128,6 +146,8 @@ class ExcelWriter:
                 manual_col = idx
             elif cell.value == 'Flag Contratto':
                 flag_col = idx
+            elif cell.value == 'Flag 1-OBU':
+                obu_flag_col = idx
 
         # Evidenzia colonna Analisi (giallo)
         if analisi_col:
@@ -149,6 +169,14 @@ class ExcelWriter:
                 for cell in row:
                     if cell.value:
                         cell.fill = self.FLAG_FILL
+                    cell.font = self.BODY_FONT
+
+        # Evidenzia colonna Flag 1-OBU (rosa) — solo celle non vuote
+        if obu_flag_col:
+            for row in ws.iter_rows(min_row=2, min_col=obu_flag_col, max_col=obu_flag_col):
+                for cell in row:
+                    if cell.value:
+                        cell.fill = self.OBU_FLAG_FILL
                     cell.font = self.BODY_FONT
 
         # Auto-width
