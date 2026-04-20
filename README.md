@@ -37,7 +37,7 @@ DEFAULT_PROVIDER=gemini
 
 ### 3. Posiziona il file Excel di input
 
-Copia il file Excel nella root del progetto con il nome definito in `INPUT_FILE` (default: `Restituzione_device_aggiuntivi_ANALISI_OPS_Personale.xlsx`).
+Copia il file Excel nella root del progetto con il nome definito in `INPUT_FILE` (default: `Restituzione_device_aggiuntivi_ANALISI OPS_Personale.xlsx`).
 
 ---
 

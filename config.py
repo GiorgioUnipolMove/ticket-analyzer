@@ -33,7 +33,7 @@ class Config:
     }
 
     # File
-    INPUT_FILE: str = os.getenv("INPUT_FILE", "Restituzione_device_aggiuntivi_ANALISI_OPS_Personale.xlsx")
+    INPUT_FILE: str = os.getenv("INPUT_FILE", "Restituzione_device_aggiuntivi_ANALISI OPS_Personale.xlsx")
     OUTPUT_FILE: str = os.getenv("OUTPUT_FILE", "output_analisi.xlsx")
     PROGRESS_FILE: str = "progress.json"
 
